@@ -1,0 +1,153 @@
+"""
+BB84 QKD + Blockchain Integration (Version 15.1.0 - Beta)
+پیاده‌سازی بلاک‌چین فرضی برای تست و بهینه‌سازی!
+"""
+
+# ------------------------ بخش ۱: کتابخانه‌های ضروری ------------------------
+import numpy as np
+import json
+import logging
+import threading
+import hashlib
+import time
+import tkinter as tk
+from tkinter import ttk, messagebox
+from qiskit import QuantumCircuit, Aer, execute
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+from zksk import Secret, DLRep
+import matplotlib.pyplot as plt
+import os
+import sys
+from reportlab.pdfgen import canvas
+from pptx import Presentation
+
+# ------------------------ بخش ۲: بلاک‌چین فرضی (In-Memory) ------------------------
+class FakeBlockchain:
+    def __init__(self):
+        self.chain = []
+        self.pending_transactions = []
+        self.create_genesis_block()
+    
+    def create_genesis_block(self):
+        genesis_block = {
+            'index': 0,
+            'timestamp': time.time(),
+            'transactions': [],
+            'previous_hash': '0'
+        }
+        genesis_block['hash'] = self.hash_block(genesis_block)
+        self.chain.append(genesis_block)
+    
+    def hash_block(self, block):
+        block_string = json.dumps(block, sort_keys=True).encode()
+        return hashlib.sha256(block_string).hexdigest()
+    
+    def add_transaction(self, transaction):
+        self.pending_transactions.append(transaction)
+        if len(self.pending_transactions) >= 1:  # بلوک‌ها پس از ۱ تراکنش ایجاد می‌شوند
+            self.mine_block()
+    
+    def mine_block(self):
+        last_block = self.chain[-1]
+        new_block = {
+            'index': last_block['index'] + 1,
+            'timestamp': time.time(),
+            'transactions': self.pending_transactions,
+            'previous_hash': last_block['hash']
+        }
+        new_block['hash'] = self.hash_block(new_block)
+        self.chain.append(new_block)
+        self.pending_transactions = []
+        return new_block
+
+# ------------------------ بخش ۳: شبیه‌سازی QKD ------------------------
+class QKDSimulation:
+    def __init__(self, config):
+        self.config = config
+        self.key_length = config['key_length']
+        self._setup_bases()
+    
+    def _setup_bases(self):
+        self.alice_bases = np.random.choice(['+', '×'], size=self.key_length)
+        self.bob_bases = np.random.choice(['+', '×'], size=self.key_length)
+    
+    def run(self):
+        alice_key = []
+        bob_key = []
+        for i in range(self.key_length):
+            qc = QuantumCircuit(1, 1)
+            if self.alice_bases[i] == '×':
+                qc.h(0)
+            if np.random.rand() < self.config['eve_attack']:
+                qc, _ = self._simulate_eavesdropping(qc)
+            if self.bob_bases[i] == '×':
+                qc.h(0)
+            qc.measure(0, 0)
+            result = execute(qc, Aer.get_backend('qasm_simulator'), shots=1).result()
+            measured_bit = int(list(result.get_counts().keys())[0])
+            if self.alice_bases[i] == self.bob_bases[i]:
+                alice_key.append(measured_bit)
+                bob_key.append(measured_bit)
+        final_key = self._generate_final_key(alice_key)
+        return {'final_key': final_key}
+    
+    def _generate_final_key(self, raw_key):
+        key = bytes(raw_key)
+        salt = get_random_bytes(16)
+        cipher = AES.new(salt, AES.MODE_EAX)
+        ciphertext, tag = cipher.encrypt_and_digest(key)
+        return {'ciphertext': ciphertext.hex(), 'salt': salt.hex(), 'tag': tag.hex()}
+
+# ------------------------ بخش ۴: رابط کاربری گرافیکی ------------------------
+class QuantumGUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("BB84 QKD + Fake Blockchain")
+        self.geometry("800x600")
+        self.blockchain = FakeBlockchain()
+        self._setup_widgets()
+    
+    def _setup_widgets(self):
+        ttk.Label(self, text="طول کلید (۸-۵۱۲):").grid(row=0, column=0, padx=10, pady=10)
+        self.key_length = ttk.Entry(self)
+        self.key_length.insert(0, "128")
+        self.key_length.grid(row=0, column=1)
+        
+        ttk.Label(self, text="احتمال حمله Eve (۰-۱):").grid(row=1, column=0, padx=10, pady=10)
+        self.eve_attack = ttk.Entry(self)
+        self.eve_attack.insert(0, "0.1")
+        self.eve_attack.grid(row=1, column=1)
+        
+        ttk.Button(self, text="شروع شبیه‌سازی", command=self.start_simulation).grid(row=2, columnspan=2, pady=20)
+        
+        self.progress = ttk.Progressbar(self, orient="horizontal", length=400, mode="determinate")
+        self.progress.grid(row=3, columnspan=2)
+        
+        self.log_text = tk.Text(self, height=15)
+        self.log_text.grid(row=4, columnspan=2)
+    
+    def start_simulation(self):
+        try:
+            config = {
+                'key_length': int(self.key_length.get()),
+                'eve_attack': float(self.eve_attack.get())
+            }
+            simulator = QKDSimulation(config)
+            result = simulator.run()
+            self.blockchain.add_transaction(result['final_key'])
+            self._update_ui(result)
+        except Exception as e:
+            messagebox.showerror("خطا", str(e))
+    
+    def _update_ui(self, result):
+        self.log_text.insert(tk.END, f"کلید ثبت شد: {result['final_key']}\n")
+        self.progress['value'] = 100
+        messagebox.showinfo("موفقیت", "کلید با موفقیت در بلاک‌چین ثبت شد!")
+
+# ------------------------ اجرای اصلی ------------------------
+if __name__ == "__main__":
+    app = QuantumGUI()
+    app.mainloop()
